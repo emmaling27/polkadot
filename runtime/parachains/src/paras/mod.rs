@@ -314,6 +314,16 @@ enum PvfCheckCause<BlockNumber> {
 	},
 }
 
+impl<BlockNumber> PvfCheckCause<BlockNumber> {
+	/// Returns the ID of the para that initiated or subscribed to the pre-checking vote.
+	fn para_id(&self) -> ParaId {
+		match *self {
+			PvfCheckCause::Onboarding(id) => id,
+			PvfCheckCause::Upgrade { id, .. } => id,
+		}
+	}
+}
+
 /// Specifies what was the outcome of a PVF pre-checking vote.
 #[derive(Copy, Clone, Encode, Decode, RuntimeDebug, TypeInfo)]
 enum PvfCheckOutcome {
@@ -467,6 +477,12 @@ pub mod pallet {
 		NewHeadNoted(ParaId),
 		/// A para has been queued to execute pending actions. `para_id`
 		ActionQueued(ParaId, SessionIndex),
+		/// The given para either initiated or subscribed to a PVF check for the given validation
+		/// code. `code_hash` `para_id`
+		PvfCheckStarted(ValidationCodeHash, ParaId),
+		/// The PVF pre-checking for the given validation code was concluded with the given outcome
+		/// (either accepted or rejected). `code_hash` `para_id` `accepted`
+		PvfCheckConcluded(ValidationCodeHash, ParaId, bool),
 	}
 
 	#[pallet::error]
@@ -1345,6 +1361,9 @@ impl<T: Config> Pallet<T> {
 	) -> Weight {
 		let mut weight = 0;
 		for cause in causes {
+			weight += T::DbWeight::get().reads_writes(3, 2);
+			Self::deposit_event(Event::PvfCheckConcluded(*code_hash, cause.para_id(), true));
+
 			match cause {
 				PvfCheckCause::Onboarding(id) => {
 					weight += Self::proceed_with_onboarding(*id, sessions_observed);
@@ -1431,6 +1450,9 @@ impl<T: Config> Pallet<T> {
 			// Whenever PVF pre-checking is started or a new cause is added to it, the RC is bumped.
 			// Now we need to unbump it.
 			weight += Self::decrease_code_ref(code_hash);
+
+			weight += T::DbWeight::get().reads_writes(3, 2);
+			Self::deposit_event(Event::PvfCheckConcluded(*code_hash, cause.para_id(), false));
 
 			match cause {
 				PvfCheckCause::Onboarding(id) => {
@@ -1712,6 +1734,9 @@ impl<T: Config> Pallet<T> {
 		cfg: &configuration::HostConfiguration<T::BlockNumber>,
 	) -> Weight {
 		let mut weight = 0;
+
+		weight += T::DbWeight::get().reads_writes(3, 2);
+		Self::deposit_event(Event::PvfCheckStarted(code_hash, cause.para_id()));
 
 		weight += T::DbWeight::get().reads(1);
 		match PvfActiveVoteMap::<T>::get(&code_hash) {
